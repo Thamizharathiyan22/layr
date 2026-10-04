@@ -34,7 +34,20 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
   const [tab, setTab] = useState<Tab>('text');
   const [peek, setPeek] = useState(false);
   const [fontTick, setFontTick] = useState(0);
-  const [view, setView] = useState({ w: 0, h: 0 }); // on-screen canvas size
+  const [view, setView] = useState({ w: 0, h: 0 }); // on-screen canvas size at 100% zoom ("Fit")
+  // ---- Zoom & pan: z = zoom (1 = fit), x/y = how far the photo is moved from the centre, in screen px ----
+  const [cam, setCam] = useState({ z: 1, x: 0, y: 0 });
+  const camRef = useRef(cam);
+  camRef.current = cam;
+  const viewRef = useRef(view);
+  viewRef.current = view;
+  const avail = useRef({ w: 0, h: 0 }); // space inside the stage
+  const [spaceHeld, setSpaceHeld] = useState(false);
+  const [panning, setPanning] = useState(false);
+  const pointers = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ d0: number; z0: number; p0: { x: number; y: number }; m0: { x: number; y: number } } | null>(null);
+  const panDrag = useRef<{ sx: number; sy: number; x0: number; y0: number } | null>(null);
+  const tapDown = useRef<{ x: number; y: number; cx: number; cy: number } | null>(null);
   const [dragging, setDragging] = useState(false);
   const drag = useRef<Drag | null>(null);
   const didAutoFit = useRef(false);
@@ -105,6 +118,7 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
       const aw = r.width - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
       const ah = r.height - parseFloat(cs.paddingTop) - parseFloat(cs.paddingBottom);
       const s = Math.min(aw / img.width, ah / img.height);
+      avail.current = { w: aw, h: ah };
       setView({ w: Math.floor(img.width * s), h: Math.floor(img.height * s) });
     };
     fit();
@@ -112,6 +126,63 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
     ro.observe(el);
     return () => ro.disconnect();
   }, [img]);
+
+  // ---- Zoom helpers ----
+  const MAX_ZOOM = 8;
+  const clampCam = (c: { z: number; x: number; y: number }) => {
+    const z = Math.min(MAX_ZOOM, Math.max(1, c.z));
+    const v = viewRef.current, a = avail.current;
+    const extra = z > 1.01 ? 40 : 0; // a little breathing room at the edges when zoomed
+    const mx = Math.max(0, (v.w * z - a.w) / 2 + extra), my = Math.max(0, (v.h * z - a.h) / 2 + extra);
+    return { z, x: Math.min(mx, Math.max(-mx, c.x)), y: Math.min(my, Math.max(-my, c.y)) };
+  };
+  /** Screen point relative to the stage centre. */
+  const fromCentre = (clientX: number, clientY: number) => {
+    const r = wrap.current!.getBoundingClientRect();
+    return { x: clientX - (r.left + r.width / 2), y: clientY - (r.top + r.height / 2) };
+  };
+  /** Zoom to z, keeping the photo point under (clientX, clientY) still. */
+  const zoomAt = (z: number, clientX?: number, clientY?: number) => {
+    const c = camRef.current;
+    const m = clientX === undefined ? { x: 0, y: 0 } : fromCentre(clientX, clientY!);
+    const nz = Math.min(MAX_ZOOM, Math.max(1, z));
+    setCam(clampCam({ z: nz, x: m.x - ((m.x - c.x) * nz) / c.z, y: m.y - ((m.y - c.y) * nz) / c.z }));
+  };
+  const fitView = () => setCam({ z: 1, x: 0, y: 0 });
+  useEffect(fitView, [img]);
+  useEffect(() => setCam((c) => clampCam(c)), [view]); // eslint-disable-line
+
+  // Mouse wheel / trackpad pinch zooms toward the pointer
+  useEffect(() => {
+    const el = wrap.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if ((e.target as Element).closest('.zoom-bar, .sam-status')) return;
+      e.preventDefault();
+      const dy = e.deltaY * (e.deltaMode === 1 ? 16 : 1);
+      const k = e.ctrlKey ? 0.01 : 0.0015; // trackpad pinch sends small ctrl+wheel steps
+      zoomAt(camRef.current.z * Math.exp(-dy * k), e.clientX, e.clientY);
+    };
+    el.addEventListener('wheel', onWheel, { passive: false });
+    return () => el.removeEventListener('wheel', onWheel);
+  }, []); // eslint-disable-line
+
+  // Hold Space to pan with the mouse (like design apps)
+  useEffect(() => {
+    const typing = (t: EventTarget | null) => !!(t as HTMLElement | null)?.closest?.('input, textarea, select, button');
+    const down = (e: KeyboardEvent) => { if (e.code === 'Space' && !typing(e.target)) { e.preventDefault(); setSpaceHeld(true); } };
+    const up = (e: KeyboardEvent) => { if (e.code === 'Space') setSpaceHeld(false); };
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    return () => { window.removeEventListener('keydown', down); window.removeEventListener('keyup', up); };
+  }, []);
+
+  // Phones: the editor panel sits below the photo, so bring the photo back into view when fixing starts
+  useEffect(() => {
+    if (!refining || !wrap.current) return;
+    const r = wrap.current.getBoundingClientRect();
+    if (r.top < 0 || r.bottom > innerHeight) wrap.current.closest('.stage')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, [refining]);
 
   // ---- Fonts: load every font in use before drawing ----
   const fontKey = layers.map((l) => `${l.font}|${l.weight}|${l.italic}`).join(',');
@@ -209,7 +280,7 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
   };
 
   // ---- Refine brush ----
-  const brushImgRadius = () => (brush * img.width) / Math.max(1, view.w);
+  const brushImgRadius = () => (brush * img.width) / Math.max(1, view.w * cam.z); // finer when zoomed in
   const scheduleCompose = () => {
     if (raf.current) return;
     raf.current = requestAnimationFrame(() => {
@@ -225,9 +296,10 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
   };
 
   const onCanvasDown = (e: RPointerEvent) => {
+    if (pinch.current || panDrag.current) return;
     const p = toImage(e);
     if (isTap) {
-      tapAt(p);
+      tapDown.current = { ...p, cx: e.clientX, cy: e.clientY }; // fires on release, so a pinch never counts as a tap
       return;
     }
     if (isBrush) {
@@ -239,7 +311,11 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
       return;
     }
     const hit = hitTest(canvas.current!.getContext('2d')!, layers, img.width, img.height, p.x, p.y);
-    if (!hit) return setSelectedId(null);
+    if (!hit) {
+      setSelectedId(null);
+      if (camRef.current.z > 1.01) startPan(e); // zoomed in: drag the empty photo to look around
+      return;
+    }
     setSelectedId(hit.id);
     drag.current = { kind: 'move', id: hit.id, dx: p.x - hit.x * img.width, dy: p.y - hit.y * img.height };
     setDragging(true);
@@ -293,7 +369,58 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
     }
   };
 
-  const onPointerUp = () => { drag.current = null; paint.current = null; setDragging(false); };
+  const onPointerUp = (e: RPointerEvent) => {
+    const t = tapDown.current;
+    tapDown.current = null;
+    if (t && isTap && e.type === 'pointerup' && Math.hypot(e.clientX - t.cx, e.clientY - t.cy) < 12) tapAt(t);
+    drag.current = null; paint.current = null; setDragging(false);
+  };
+
+  // ---- Pan (one finger on empty photo, Space+drag, middle mouse) and pinch (two fingers) ----
+  const startPan = (e: RPointerEvent) => {
+    panDrag.current = { sx: e.clientX, sy: e.clientY, x0: camRef.current.x, y0: camRef.current.y };
+    setPanning(true);
+    wrap.current?.setPointerCapture(e.pointerId);
+  };
+  const onWrapDownCapture = (e: RPointerEvent) => {
+    if ((e.target as Element).closest('.zoom-bar, .sam-status')) return;
+    if (e.pointerType === 'touch') pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY }); // fingers only
+    if (pointers.current.size === 2) {
+      // Second finger: switch to pinch, and undo whatever the first finger just started
+      e.stopPropagation();
+      if (paint.current) { paint.current = null; cutout.undo(); setCutTick((t) => t + 1); }
+      drag.current = null; tapDown.current = null; panDrag.current = null;
+      setDragging(false); setPanning(false);
+      const [a, b] = [...pointers.current.values()];
+      const c = camRef.current;
+      pinch.current = { d0: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)), z0: c.z, p0: { x: c.x, y: c.y }, m0: fromCentre((a.x + b.x) / 2, (a.y + b.y) / 2) };
+      return;
+    }
+    if (pointers.current.size > 2 || pinch.current) { e.stopPropagation(); return; }
+    if (spaceHeld || e.button === 1 || e.target === wrap.current) {
+      e.stopPropagation();
+      e.preventDefault();
+      if (camRef.current.z > 1.01 || spaceHeld || e.button === 1) startPan(e);
+    }
+  };
+  const onWrapMove = (e: RPointerEvent) => {
+    if (pointers.current.has(e.pointerId)) pointers.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const pc = pinch.current;
+    if (pc && pointers.current.size >= 2) {
+      const [a, b] = [...pointers.current.values()];
+      const z = Math.min(MAX_ZOOM, Math.max(1, (pc.z0 * Math.hypot(a.x - b.x, a.y - b.y)) / pc.d0));
+      const m = fromCentre((a.x + b.x) / 2, (a.y + b.y) / 2);
+      setCam(clampCam({ z, x: m.x - ((pc.m0.x - pc.p0.x) * z) / pc.z0, y: m.y - ((pc.m0.y - pc.p0.y) * z) / pc.z0 }));
+      return;
+    }
+    const pd = panDrag.current;
+    if (pd) setCam(clampCam({ z: camRef.current.z, x: pd.x0 + e.clientX - pd.sx, y: pd.y0 + e.clientY - pd.sy }));
+  };
+  const onWrapUp = (e: RPointerEvent) => {
+    pointers.current.delete(e.pointerId);
+    if (pointers.current.size < 2) pinch.current = null;
+    if (pointers.current.size === 0) { panDrag.current = null; setPanning(false); }
+  };
 
   // ---- Keyboard: arrows nudge, Delete removes, Esc deselects ----
   useEffect(() => {
@@ -338,7 +465,7 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
   if (selected && canvas.current && view.w && !refining) {
     const b = inkBounds(canvas.current.getContext('2d')!, selected, img.width);
     const pad = selectionPad(selected, img.width);
-    const k = view.w / img.width;
+    const k = (view.w * cam.z) / img.width;
     // Ink box centre is offset from the layer centre; rotate that offset with the text
     const a = (selected.rotation * Math.PI) / 180;
     const cx = (b.left + b.right) / 2, cy = (b.top + b.bottom) / 2;
@@ -376,10 +503,22 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
 
       <div className="workspace">
         <section className="stage">
-          <div className="canvas-wrap" ref={wrap}>
+          <div
+            className={`canvas-wrap ${spaceHeld ? 'pan-ready' : ''} ${panning ? 'panning' : ''} ${cam.z > 1.01 ? 'zoomed' : ''}`}
+            ref={wrap}
+            onPointerDownCapture={onWrapDownCapture}
+            onPointerMoveCapture={onWrapMove}
+            onPointerUp={onWrapUp}
+            onPointerCancel={onWrapUp}
+            onLostPointerCapture={onWrapUp}
+          >
             <div
               className={`canvas-box ${dragging ? 'is-dragging' : ''} ${isBrush ? 'brushing' : ''} ${isTap ? 'tapping' : ''} ${sam.state === 'busy' ? 'busy' : ''}`}
-              style={{ width: view.w, height: view.h }}
+              style={{
+                width: view.w * cam.z,
+                height: view.h * cam.z,
+                transform: `translate(calc(-50% + ${cam.x}px), calc(-50% + ${cam.y}px))`,
+              }}
               onPointerMove={onPointerMove}
               onPointerUp={onPointerUp}
               onPointerCancel={onPointerUp}
@@ -397,9 +536,6 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
               {taps.map((t) => (
                 <span key={t.id} className={`tap-ping ${t.add ? 'add' : 'remove'}`} style={{ left: `${t.x * 100}%`, top: `${t.y * 100}%` }} />
               ))}
-              {isTap && sam.state !== 'ready' && sam.state !== 'busy' && sam.state !== 'idle' && (
-                <div className={`sam-status ${sam.state}`}>{sam.state === 'loading' && <span className="spin" />}{sam.msg}</div>
-              )}
               {box && (
                 <div className="sel" style={box}>
                   <span className="h tl" onPointerDown={(e) => onHandleDown(e, 'scale')} />
@@ -411,6 +547,15 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
                   </span>
                 </div>
               )}
+            </div>
+            {isTap && sam.state !== 'ready' && sam.state !== 'busy' && sam.state !== 'idle' && (
+              <div className={`sam-status ${sam.state}`}>{sam.state === 'loading' && <span className="spin" />}{sam.msg}</div>
+            )}
+            <div className="zoom-bar" onPointerDown={(e) => e.stopPropagation()}>
+              <button onClick={() => zoomAt(cam.z / 1.5)} disabled={cam.z <= 1.01} title="Zoom out" aria-label="Zoom out">−</button>
+              <button className="zoom-pct" onClick={fitView} title="Fit whole photo">{Math.round(cam.z * 100)}%</button>
+              <button onClick={() => zoomAt(cam.z * 1.5)} disabled={cam.z >= MAX_ZOOM - 0.01} title="Zoom in" aria-label="Zoom in">+</button>
+              {cam.z > 1.01 && <button className="zoom-fit" onClick={fitView}>Fit</button>}
             </div>
           </div>
           <div className="stage-bar">
@@ -439,11 +584,12 @@ export default function Editor({ img, mask, onNew, onRetryCutout, cutoutJob, onD
                   {tool === 'tapAdd' && 'Tap anything the AI missed — it will jump in front of the text.'}
                   {tool === 'tapRemove' && 'Tap anything that should NOT cover the text.'}
                   {isBrush && 'Paint over small areas. Pink = in front of the text.'}
+                  {' '}<span className="zoom-hint">Zoom in for small parts: pinch, or scroll the mouse wheel.</span>
                 </p>
               </div>
             ) : (
               <>
-                <span className="hint">Drag to move · corners to resize · ⟳ to rotate · double-click to edit text</span>
+                <span className="hint">Drag to move · corners to resize · ⟳ to rotate · pinch or scroll to zoom</span>
                 {fg && (
                   <button
                     className={`btn chip ${peek ? 'on' : ''}`}

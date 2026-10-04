@@ -1,4 +1,7 @@
+import { isLowMemoryDevice } from '../lib/device';
 import type { SegmentProgress } from '../lib/segment';
+
+const PHONE = isLowMemoryDevice();
 import { LockIcon } from './Explainers';
 import Logo from './Logo';
 
@@ -20,19 +23,24 @@ export default function Processing({ preview, progress, error, onRetry, onSkip, 
   if (progress?.stage === 'download' && progress.percent >= 99.5) {
     // Files are in; the browser is now setting the model up on the GPU/CPU (no progress events)
     title = 'Setting up AI on your device…';
-    detail = 'First time only — this can take up to a minute';
+    detail = PHONE ? 'Phones need a little longer — up to a minute' : 'This can take up to a minute';
   } else if (progress?.stage === 'download') {
     pct = progress.percent;
     title = 'Downloading AI model (first time only)';
+    const lite = progress.device === 'wasm' ? (PHONE ? 'Phone detected — using the lighter AI · ' : 'Using the lighter AI · ') : '';
     detail = progress.totalMB
-      ? `${progress.loadedMB.toFixed(0)} / ${progress.totalMB.toFixed(0)} MB · cached for next time`
+      ? `${lite}${progress.loadedMB.toFixed(0)} / ${progress.totalMB.toFixed(0)} MB · saved for next time`
       : 'Starting download…';
   } else if (progress?.stage === 'fallback') {
-    title = 'GPU not supported — switching to CPU';
-    detail = 'Slower, but works on every computer. We’ll remember this.';
+    title = 'Graphics chip too slow — switching to CPU';
+    detail = 'Slower, but works on every device. We’ll remember this.';
   } else if (progress?.stage === 'detect') {
     title = 'Finding people & objects…';
-    detail = progress.device === 'webgpu' ? 'Using your GPU' : 'Using your CPU — can take 10–30 seconds';
+    detail = progress.device === 'webgpu'
+      ? 'Using your graphics chip (GPU)'
+      : PHONE
+        ? 'Phone detected — using the lighter AI on your CPU (about 20–40 seconds)'
+        : 'Using your CPU — can take 10–30 seconds';
   }
 
   return (
