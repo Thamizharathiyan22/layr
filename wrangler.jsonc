@@ -7,5 +7,8 @@
     "directory": "./dist",
     // Unknown paths like /privacy return index.html, and the app shows the right page
     "not_found_handling": "single-page-application"
-  }
+  },
+  // Only serve the site on layrphoto.com — turn off the extra *.workers.dev test addresses
+  "workers_dev": false,
+  "preview_urls": false
 }
