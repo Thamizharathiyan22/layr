@@ -1,0 +1,11 @@
+// Cloudflare Workers settings for Layr.
+// Layr is a static site: Cloudflare only serves the built files in ./dist (free and unlimited).
+{
+  "name": "layr",
+  "compatibility_date": "2026-10-01",
+  "assets": {
+    "directory": "./dist",
+    // Unknown paths like /privacy return index.html, and the app shows the right page
+    "not_found_handling": "single-page-application"
+  }
+}
