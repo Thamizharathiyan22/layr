@@ -2,6 +2,7 @@
 // Runs the subject-cutout AI off the main thread so the UI never freezes.
 // Model: IS-Net (general objects: people, cars, products, animals).
 import { pipeline, RawImage, env } from '@huggingface/transformers';
+import { goodGpu } from './device';
 
 const MODEL_ID = 'onnx-community/ISNet-ONNX';
 
@@ -12,23 +13,14 @@ export type Device = 'webgpu' | 'wasm';
 
 let current: { device: Device; seg: Promise<any> } | null = null;
 
-async function gpuInfo() {
-  try {
-    const gpu = (navigator as any).gpu;
-    const adapter = gpu && (await gpu.requestAdapter());
-    return adapter ? { ok: true, f16: adapter.features.has('shader-f16') } : { ok: false, f16: false };
-  } catch {
-    return { ok: false, f16: false };
-  }
-}
-
-async function getSegmenter(want: Device | 'auto', onProgress: (p: any) => void) {
-  let device: Device = want === 'auto' ? ((await gpuInfo()).ok ? 'webgpu' : 'wasm') : want;
-  if (want === 'webgpu' && !(await gpuInfo()).ok) device = 'wasm';
+async function getSegmenter(want: Device | 'auto', onProgress: (p: any) => void, onDevice: (d: Device) => void) {
+  // GPU only if it supports half precision (88 MB model). Otherwise the CPU model (44 MB) is
+  // smaller and more reliable than the 176 MB full-precision GPU model, especially on phones.
+  const device: Device = want === 'wasm' ? 'wasm' : (await goodGpu()) ? 'webgpu' : 'wasm';
+  onDevice(device);
   if (current?.device === device) return current;
 
-  // GPU: half precision (88 MB) when supported, else full. CPU: 8-bit (44 MB), fastest on CPU.
-  const dtype = device === 'webgpu' ? ((await gpuInfo()).f16 ? 'fp16' : 'fp32') : 'uint8';
+  const dtype = device === 'webgpu' ? 'fp16' : 'uint8';
   const seg = pipeline('background-removal', MODEL_ID, { device, dtype, progress_callback: onProgress } as any);
   current = { device, seg };
   seg.catch(() => { if (current?.seg === seg) current = null; });
@@ -49,7 +41,7 @@ self.onmessage = async (e: MessageEvent<{ id: number; blob: Blob; device: Device
     (self as unknown as Worker).postMessage({ id, ...msg }, transfer ?? []);
 
   const run = async (w: Device | 'auto') => {
-    const s = await getSegmenter(w, (p) => post({ type: 'progress', p }));
+    const s = await getSegmenter(w, (p) => post({ type: 'progress', p }), (d) => post({ type: 'device', device: d }));
     const seg = await s.seg;
     post({ type: 'stage', stage: 'detect', device: s.device });
     const image = await RawImage.fromBlob(blob);

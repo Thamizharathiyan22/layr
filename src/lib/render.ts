@@ -1,5 +1,6 @@
 // The core effect: photo → text → cut-out subject, stacked on one canvas.
 import type { Mask } from './segment';
+import { isLowMemoryDevice } from './device';
 
 export type Blend = 'source-over' | 'overlay' | 'soft-light' | 'screen' | 'multiply' | 'difference' | 'color-dodge';
 export type Align = 'left' | 'center' | 'right';
@@ -76,7 +77,8 @@ export const BASE_STYLE: StyleFields = {
   skew: 0,
 };
 
-export const MAX_SIDE = 2560; // keeps memory and AI time sane on phones
+// Working photo size: phones have tight canvas memory limits, so they get a smaller copy.
+export const MAX_SIDE = isLowMemoryDevice() ? 1600 : 2560;
 
 let seq = 0;
 export function newLayer(partial: Partial<TextLayer> = {}): TextLayer {

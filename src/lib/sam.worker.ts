@@ -3,6 +3,7 @@
 // Step 1 (slow, once per photo): read the whole photo → "image embeddings".
 // Step 2 (fast, per tap):       embeddings + tap point → mask of that object.
 import { AutoProcessor, RawImage, SamModel, Tensor, env } from '@huggingface/transformers';
+import { goodGpu } from './device';
 
 const MODEL_ID = 'Xenova/slimsam-77-uniform';
 env.allowLocalModels = false;
@@ -12,17 +13,8 @@ type Device = 'webgpu' | 'wasm';
 let loaded: { device: Device; model: any; processor: any } | null = null;
 let current: { key: number; inputs: any; embeddings: any; W: number; H: number } | null = null;
 
-async function hasGpu() {
-  try {
-    const gpu = (navigator as any).gpu;
-    return !!gpu && !!(await gpu.requestAdapter());
-  } catch {
-    return false;
-  }
-}
-
 async function load(want: Device | 'auto', onProgress: (p: any) => void) {
-  const device: Device = want === 'wasm' ? 'wasm' : (await hasGpu()) ? 'webgpu' : 'wasm';
+  const device: Device = want === 'wasm' ? 'wasm' : (await goodGpu()) ? 'webgpu' : 'wasm';
   if (loaded?.device === device) return loaded;
   const dtype = device === 'webgpu' ? 'fp32' : 'q8';
   const [model, processor] = await Promise.all([

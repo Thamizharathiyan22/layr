@@ -6,6 +6,9 @@
 //         └─ − erase strokes   (brush)
 //              └─ × photo      → foreground layer drawn over the text
 import type { Mask } from './segment';
+import { isLowMemoryDevice } from './device';
+
+const LOW_MEM = isLowMemoryDevice();
 
 function blank(W: number, H: number) {
   const c = document.createElement('canvas');
@@ -14,8 +17,8 @@ function blank(W: number, H: number) {
   return c;
 }
 
-/** AI mask scaled smoothly to the photo size, stored as grey levels (R = alpha). */
-export function maskToCanvas(mask: Mask, W: number, H: number): HTMLCanvasElement {
+/** AI mask as grey levels (R = alpha). Kept at the AI's own size unless W×H is given. */
+export function maskToCanvas(mask: Mask, W = mask.width, H = mask.height): HTMLCanvasElement {
   const small = blank(mask.width, mask.height);
   const sctx = small.getContext('2d')!;
   const d = sctx.createImageData(mask.width, mask.height);
@@ -25,6 +28,7 @@ export function maskToCanvas(mask: Mask, W: number, H: number): HTMLCanvasElemen
     d.data[i * 4 + 3] = 255;
   }
   sctx.putImageData(d, 0, 0);
+  if (W === mask.width && H === mask.height) return small;
   const big = blank(W, H);
   const bctx = big.getContext('2d')!;
   bctx.imageSmoothingQuality = 'high';
@@ -65,6 +69,8 @@ export class Cutout {
   readonly fg: HTMLCanvasElement; // final foreground, drawn over the text
   readonly restore: HTMLCanvasElement; // brush: force "subject"
   readonly erase: HTMLCanvasElement; // brush: force "background"
+  // On phones, grey + solid stay at the AI mask's size (≤1024 px) and are scaled up when drawn: saves memory.
+  // Computers keep them at full size for the crispest edges.
   private grey: HTMLCanvasElement | null;
   private solid: HTMLCanvasElement;
   private undoStack: [ImageBitmap, ImageBitmap][] = [];
@@ -75,14 +81,14 @@ export class Cutout {
     this.fg = blank(this.W, this.H);
     this.restore = blank(this.W, this.H);
     this.erase = blank(this.W, this.H);
-    this.solid = blank(this.W, this.H);
-    this.grey = mask ? maskToCanvas(mask, this.W, this.H) : null;
+    this.grey = mask ? (LOW_MEM ? maskToCanvas(mask) : maskToCanvas(mask, this.W, this.H)) : null;
+    this.solid = blank(this.grey?.width ?? 1, this.grey?.height ?? 1);
     this.setSolidity(solidity);
   }
 
   setSolidity(s: number) {
     if (this.grey) applySolidity(this.grey, s, this.solid);
-    else this.solid.getContext('2d')!.clearRect(0, 0, this.W, this.H);
+    else this.solid.getContext('2d')!.clearRect(0, 0, this.solid.width, this.solid.height);
     this.compose();
   }
 
@@ -92,7 +98,9 @@ export class Cutout {
     ctx.save();
     ctx.globalCompositeOperation = 'source-over';
     ctx.clearRect(0, 0, this.W, this.H);
-    ctx.drawImage(this.solid, 0, 0);
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    if (this.grey) ctx.drawImage(this.solid, 0, 0, this.W, this.H);
     ctx.drawImage(this.restore, 0, 0);
     ctx.globalCompositeOperation = 'destination-out';
     ctx.drawImage(this.erase, 0, 0);
@@ -160,7 +168,7 @@ export class Cutout {
     // Both snapshots are taken right now, before any new paint lands
     const snap = (await Promise.all([createImageBitmap(this.restore), createImageBitmap(this.erase)])) as [ImageBitmap, ImageBitmap];
     this.undoStack.push(snap);
-    if (this.undoStack.length > 12) this.undoStack.shift()?.forEach((b) => b.close());
+    if (this.undoStack.length > (LOW_MEM ? 5 : 12)) this.undoStack.shift()?.forEach((b) => b.close());
   }
 
   canUndo() {

@@ -1,13 +1,14 @@
 // Main-thread wrapper around the AI worker: progress, GPU→CPU fallback, timeouts.
 export type Mask = { width: number; height: number; data: Uint8Array };
 export type SegmentProgress =
-  | { stage: 'download'; percent: number; loadedMB: number; totalMB: number }
+  | { stage: 'download'; percent: number; loadedMB: number; totalMB: number; device?: string }
   | { stage: 'detect'; device: string }
   | { stage: 'fallback' };
 
 type Device = 'webgpu' | 'wasm' | 'auto';
 const PREF_KEY = 'layr.device';
-const DETECT_TIMEOUT_MS = 90_000;
+// A stuck graphics chip gives up and switches to the CPU after this long
+const GPU_TIMEOUT_MS = 45_000;
 
 let worker: Worker | null = null;
 let nextId = 1;
@@ -36,6 +37,8 @@ function runOnce(blob: Blob, device: Device, onProgress: (p: SegmentProgress) =>
   const id = nextId++;
   const files = new Map<string, { loaded: number; total: number }>();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let usedDevice: string | undefined;
+  let setupTimerOn = false;
 
   return new Promise((resolve, reject) => {
     const cancel = (err: Error) => { cleanup(); reject(err); };
@@ -55,12 +58,22 @@ function runOnce(blob: Blob, device: Device, onProgress: (p: SegmentProgress) =>
           files.set(p.file, { loaded: p.loaded, total: p.total });
           let loaded = 0, total = 0;
           files.forEach((f) => { loaded += f.loaded; total += f.total; });
-          onProgress({ stage: 'download', percent: total ? (loaded / total) * 100 : 0, loadedMB: loaded / 1048576, totalMB: total / 1048576 });
+          const percent = total ? (loaded / total) * 100 : 0;
+          onProgress({ stage: 'download', percent, loadedMB: loaded / 1048576, totalMB: total / 1048576, device: usedDevice });
+          // Files are in and the GPU is setting up the model: don't let a hang last forever
+          if (percent >= 99.5 && usedDevice === 'webgpu' && !setupTimerOn) {
+            setupTimerOn = true;
+            clearTimeout(timer);
+            timer = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, GPU_TIMEOUT_MS);
+          }
         }
+      } else if (msg.type === 'device') {
+        usedDevice = msg.device;
       } else if (msg.type === 'stage') {
         onProgress({ stage: 'detect', device: msg.device });
         clearTimeout(timer);
-        timer = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, DETECT_TIMEOUT_MS);
+        // Only the GPU can hang silently; the CPU is slow on phones but always finishes
+        if (msg.device === 'webgpu') timer = setTimeout(() => { cleanup(); reject(new Error('timeout')); }, GPU_TIMEOUT_MS);
       } else if (msg.type === 'fallback') {
         setPref('wasm');
         onProgress({ stage: 'fallback' });
