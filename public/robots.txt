@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://layrphoto.com/sitemap.xml

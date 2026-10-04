@@ -1,0 +1,24 @@
+Layr — text behind anything
+Copyright (C) 2026 Layr
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
+
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+Full licence text: https://www.gnu.org/licenses/agpl-3.0.txt
+
+Third-party parts keep their own licences:
+- IS-Net cutout model (onnx-community/ISNet-ONNX) — AGPL-3.0 as listed
+- SlimSAM model (Xenova/slimsam-77-uniform) — Apache-2.0
+- Transformers.js — Apache-2.0; ONNX Runtime Web — MIT
+- React, Vite — MIT
+- Google Fonts — SIL Open Font License 1.1 or Apache-2.0
