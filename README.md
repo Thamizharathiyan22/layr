@@ -39,9 +39,10 @@ Two AI models, both running in the browser:
 Where the work happens once the site is online:
 
 ```
-Website host (Cloudflare) ──► page files (small) ──┐
-Hugging Face ──────────────► AI models, once ─────┼──► Visitor's own GPU/CPU does the cutout
-                                                   │     (photo never leaves the device)
+Website host (Cloudflare) -------------> page files (small) ──┐
+                                                              |
+Hugging Face ----------------> AI models, once --------------------------------> Visitor's own GPU/CPU does the cutout
+                                                                                      (photo never leaves the device)
 ```
 
 | File | Job |
